@@ -1,0 +1,211 @@
+Parameters:
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instance
+    Type: 'AWS::EC2::KeyPair::KeyName'
+
+
+  InstanceType:
+    Description: Amazon EC2 instance type for the instances
+    Type: String
+    AllowedValues:
+      - t3.micro
+      - t2.micro
+      - t2.medium
+    Default: t2.medium
+
+  Subnets:
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Description: A list of subnets for the Auto Scaling group
+
+  Vpc:
+     Type: 'AWS::EC2::VPC::Id'
+     Description: the vpc id  
+
+
+
+Mappings:
+  RegionMap:
+    eu-west-3:
+      AMI:  ami-0f5094faf16f004eb 
+    
+
+Resources:
+  myLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${AWS::StackName}-launch-template
+      LaunchTemplateData:
+        #ImageId:  !FindInMap 
+        #  - RegionMap
+        #  - !Ref 'AWS::Region'
+        #  - AMI
+        ImageId: ami-0f5094faf16f004eb 
+        InstanceType: !Ref InstanceType
+        #NetworkInterfaces:
+        #  - DeviceIndex: 0
+        #    AssociatePublicIpAddress: true
+        #    Groups:
+        #      - sg-0a379288ef0bd9430
+        #    DeleteOnTermination: true
+        KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Name: !Ref myInstanceProfile
+        SecurityGroupIds:
+         - !GetAtt 
+           - InstanceSecurityGroup
+           - GroupId
+        UserData: 
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo amazon-linux-extras install nginx1 -y
+            sudo service nginx start
+            sudo yum install ruby -y
+            sudo yum install wget -y
+            cd /home/ec2-user
+            sudo wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install
+            sudo chmod +x ./install
+            sudo ./install auto
+
+        TagSpecifications:
+        - ResourceType: instance
+          Tags:
+          - Key: environment
+            Value: development
+        - ResourceType: volume
+          Tags:
+          - Key: environment
+            Value: development
+
+
+  myInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: InstanceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: 'Allow'
+          Principal:
+            Service:
+            - 'ec2.amazonaws.com'
+          Action:
+          - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::080266302756:policy/s3fullaccessPolicy'
+
+  myInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: '/'
+      Roles:
+      - !Ref myInstanceRole
+  
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      Tags:
+         - Key: Name
+           Value: cloudformation-sg
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt 
+                - LoadBalancerSg
+                - GroupId
+
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  LoadBalancerSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      Tags:
+         - Key: Name
+           Value: cloudformation-sg
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      
+      Name: clouformation-loadbalancer
+      Scheme: internet-facing
+      SecurityGroups: 
+        - !Ref LoadBalancerSg
+      Subnets: !Ref Subnets
+      Tags: 
+        - Key: Name
+          Value: cloudformation-loadbalancer
+      Type: application
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      HealthCheckPath: /
+      HealthCheckPort: 80
+      HealthCheckProtocol: HTTP
+      Name: cloudformation-targetgroup
+      Port: 80
+      Protocol: HTTP
+      Tags: 
+        - Key: Name
+          Value: cloudformation-targetgroup
+      VpcId: !Ref Vpc
+
+
+  Listener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: '80'
+      Protocol: HTTP
+
+  myASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref myLaunchTemplate
+        Version: !GetAtt 
+           - myLaunchTemplate
+           - LatestVersionNumber
+
+      MaxSize: '3'
+      MinSize: '1'
+      DesiredCapacity: '1'
+      TargetGroupARNs: 
+        - !Ref TargetGroup
+      VPCZoneIdentifier: !Ref Subnets
+
+Outputs:
+   LoadBalancer:
+     Value: !GetAtt
+        - LoadBalancer
+        - DNSName
+
+
+  
