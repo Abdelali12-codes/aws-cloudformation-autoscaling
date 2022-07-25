@@ -1,0 +1,18 @@
+Parameters:
+  HostedZoneId:
+     Description: The HostedZoneId
+     Type: AWS::Route53::HostedZone::Id
+
+
+Resources:
+    ELBRecord:
+      Type: AWS::Route53::RecordSetGroup
+      Properties:
+        HostedZoneId: !Ref HostedZoneId
+        Comment: Zone apex alias targeted to myELB LoadBalancer
+        RecordSets:
+        - Name: cloudformation.abdelalitraining.com
+          Type: A
+          AliasTarget:
+            HostedZoneId: !ImportValue autoscaling-cloudformation-elbhostedzoneId
+            DNSName: !ImportValue autoscaling-cloudformation-elbdns
