@@ -21,6 +21,10 @@ Parameters:
      Type: 'AWS::EC2::VPC::Id'
      Description: the vpc id  
 
+  Name:
+     Type: String
+     Description: The Name Parameter
+     Default: Abdelali
 
 
 Mappings:
@@ -32,6 +36,52 @@ Mappings:
 Resources:
   myLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      AWS::CloudFormation::Init: 
+        config:
+            files:
+              "/home/ec2-user/script.sh":
+                content: !Sub |
+                        #!/bin/bash
+                        sudo amazon-linux-extras install nginx1 -y
+                        sudo service nginx start
+                        sudo yum install ruby -y
+                        sudo yum install wget -y
+                        cd /home/ec2-user
+                        sudo wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install
+                        sudo chmod +x ./install
+                        sudo ./install auto
+                mode: "000744"
+                owner: "ec2-user"
+                group: "ec2-user"
+              "/usr/share/nginx/html/index.html":
+                content: !Sub |
+                        <h1> Hi My name is ${Name} </h1>
+                mode: "000644"
+                owner: "root"
+                group: "root"
+                # The cfn-hup.conf file stores the name of the stack and the AWS credentials that the cfn-hup daemon targets.
+              "/etc/cfn/cfn-hup.conf":
+                content: !Sub |
+                  [main]
+                  stack=${AWS::StackId}
+                  region=${AWS::Region}
+                  # The interval used to check for changes to the resource metadata in minutes. Default is 15
+                  interval=2
+                mode: "000400"
+                owner: "root"
+                group: "root"
+              # The user actions that the cfn-hup daemon calls periodically are defined in the hooks.conf configuration file.
+              # To support composition of several applications deploying change notification hooks, cfn-hup supports a directory named hooks.d that is located in the hooks configuration directory. You can place one or more additional hooks configuration files in the hooks.d directory. The additional hooks files must use the same layout as the hooks.conf file.
+              "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+                content: !Sub |
+                  [cfn-auto-reloader-hook]
+                  triggers=post.update
+                  path=Resources.WebServerHost.Metadata.AWS::CloudFormation::Init
+                  action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource WebServerHost --region ${AWS::Region}
+                mode: "000400"
+                owner: "root"
+                group: "root"
     Properties:
       LaunchTemplateName: !Sub ${AWS::StackName}-launch-template
       LaunchTemplateData:
@@ -54,18 +104,22 @@ Resources:
          - !GetAtt 
            - InstanceSecurityGroup
            - GroupId
-        UserData: 
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            sudo amazon-linux-extras install nginx1 -y
-            sudo service nginx start
-            sudo yum install ruby -y
-            sudo yum install wget -y
-            cd /home/ec2-user
-            sudo wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install
-            sudo chmod +x ./install
-            sudo ./install auto
 
+
+        UserData: 
+         Fn::Base64: !Sub |
+              
+               #!/bin/bash
+               yum update -y aws-cfn-bootstrap
+               # Start cfn-init 
+               /opt/aws/bin/cfn-init -s ${AWS::StackId} -r myLaunchTemplate --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+               # Run the script
+               sudo bash /home/ec2-user/script.sh
+               # cfn-hup daemon
+               /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
+               # all dones succefully send signal
+               /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource myASG --region ${AWS::Region}
+      
         TagSpecifications:
         - ResourceType: instance
           Tags:
@@ -109,14 +163,12 @@ Resources:
            Value: cloudformation-sg
       VpcId: !Ref Vpc
       SecurityGroupIngress:
-
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           SourceSecurityGroupId: !GetAtt 
                 - LoadBalancerSg
                 - GroupId
-
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
@@ -148,8 +200,7 @@ Resources:
 
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties: 
-      
+    Properties:   
       Name: clouformation-loadbalancer
       Scheme: internet-facing
       SecurityGroups: 
@@ -184,9 +235,27 @@ Resources:
       LoadBalancerArn: !Ref LoadBalancer
       Port: '80'
       Protocol: HTTP
+  
+  ListenerRule1: 
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      Conditions:
+        - Field: http-request-method
+          HttpRequestMethodConfig:
+            Values:
+              - POST
+      ListenerArn: !Ref Listener
+      Priority: 1
 
+      
   myASG:
     Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
     Properties:
       LaunchTemplate:
         LaunchTemplateId: !Ref myLaunchTemplate
@@ -202,10 +271,18 @@ Resources:
       VPCZoneIdentifier: !Ref Subnets
 
 Outputs:
-   LoadBalancer:
-     Value: !GetAtt
+    LoadBalancer:
+      Value: !GetAtt
         - LoadBalancer
         - DNSName
+      Export:
+         Name: !Sub ${AWS::StackName}-elbdns #pseudo parameter
+    ElbHostedZoneId:
+      Value: !GetAtt 
+               - LoadBalancer
+               - CanonicalHostedZoneID
+      Export:
+         Name: !Sub ${AWS::StackName}-elbhostedzoneId
 
 
   

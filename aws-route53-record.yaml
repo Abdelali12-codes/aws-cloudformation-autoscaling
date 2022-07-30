@@ -1,0 +1,15 @@
+Parameters:
+    HostedZoneId:
+      Description: The Host Zone Id
+      Type: AWS::Route53::HostedZone::Id
+
+Resources:
+    Route53Record:
+       Type: AWS::Route53::RecordSet
+       Properties:
+          AliasTarget: 
+              DNSName: !ImportValue autoscaling-cloudformation-elbdns
+              HostedZoneId: !ImportValue autoscaling-cloudformation-elbhostedzoneId
+          Type: CNAME
+          HostedZoneId: !Ref HostedZoneId
+          Name: cloudformation.abdelalitraining.com
